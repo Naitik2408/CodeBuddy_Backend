@@ -462,14 +462,139 @@ const getGroupMembers = async (req, res) => {
       .populate('userId', 'name email avatar')
       .sort({ joinedAt: 1 });
 
+    // Import Question model
+    const Question = require('../models/Question');
+
+    // Calculate real statistics for each member
+    const membersWithStats = await Promise.all(
+      members.map(async (member) => {
+        try {
+
+          // Get total questions in the group
+          const totalQuestions = await Question.countDocuments({
+            groupId: id,
+            status: 'active'
+          });
+
+
+          // Get questions with member responses
+          const questionsWithResponses = await Question.find({
+            groupId: id,
+            status: 'active',
+            'memberResponses.userId': member.userId._id
+          });
+
+          // Calculate statistics
+          const totalResponses = questionsWithResponses.length;
+          const solvedCount = questionsWithResponses.filter(q =>
+            q.memberResponses.some(r =>
+              r.userId.toString() === member.userId._id.toString() && r.status === 'solved'
+            )
+          ).length;
+
+          const successRate = totalResponses > 0 ? Math.round((solvedCount / totalResponses) * 100) : 0;
+
+          // Calculate current streak
+          const recentQuestions = await Question.find({
+            groupId: id,
+            status: 'active',
+            'memberResponses.userId': member.userId._id
+          })
+            .sort({ createdAt: -1 })
+            .limit(20);
+
+          let currentStreak = 0;
+          for (const question of recentQuestions) {
+            const response = question.memberResponses.find(r =>
+              r.userId.toString() === member.userId._id.toString()
+            );
+            if (response && response.status === 'solved') {
+              currentStreak++;
+            } else {
+              break;
+            }
+          }
+
+          // Calculate average time to solve
+          const solvedQuestions = questionsWithResponses.filter(q =>
+            q.memberResponses.some(r =>
+              r.userId.toString() === member.userId._id.toString() &&
+              r.status === 'solved' &&
+              r.timeToSolve
+            )
+          );
+
+          const averageTimeToSolve = solvedQuestions.length > 0
+            ? Math.round(
+              solvedQuestions.reduce((sum, q) => {
+                const response = q.memberResponses.find(r =>
+                  r.userId.toString() === member.userId._id.toString()
+                );
+                return sum + (response.timeToSolve || 0);
+              }, 0) / solvedQuestions.length
+            )
+            : null;
+
+          const memberStats = {
+            problemsSolved: solvedCount,
+            successRate: successRate,
+            currentStreak: currentStreak,
+            totalResponses: totalResponses,
+            totalQuestions: totalQuestions,
+            averageTimeToSolve: averageTimeToSolve,
+            questionsAttempted: totalResponses,
+            rank: null // Will be calculated after sorting
+          };
+
+        
+
+          return {
+            _id: member._id,
+            userId: member.userId,
+            role: member.role,
+            joinedAt: member.joinedAt,
+            lastActive: member.lastActive || member.joinedAt,
+            stats: memberStats // Make sure this is included
+          };
+        } catch (error) {
+          console.error(`Error calculating stats for member ${member.userId._id}:`, error);
+          // Return member with default stats if calculation fails
+          return {
+            _id: member._id,
+            userId: member.userId,
+            role: member.role,
+            joinedAt: member.joinedAt,
+            lastActive: member.lastActive || member.joinedAt,
+            stats: {
+              problemsSolved: 0,
+              successRate: 0,
+              currentStreak: 0,
+              totalResponses: 0,
+              totalQuestions: 0,
+              averageTimeToSolve: null,
+              questionsAttempted: 0,
+              rank: null
+            }
+          };
+        }
+      })
+    );
+
+    // Calculate ranks based on problems solved
+    const sortedMembers = [...membersWithStats].sort((a, b) =>
+      (b.stats.problemsSolved || 0) - (a.stats.problemsSolved || 0)
+    );
+
+    sortedMembers.forEach((member, index) => {
+      const originalMember = membersWithStats.find(m => m._id.toString() === member._id.toString());
+      if (originalMember && originalMember.stats) {
+        originalMember.stats.rank = index + 1;
+      }
+    });
+
+
     res.json({
-      members: members.map(member => ({
-        _id: member._id,
-        userId: member.userId,
-        role: member.role,
-        joinedAt: member.joinedAt,
-        lastActive: member.lastActive
-      }))
+      members: membersWithStats
     });
   } catch (error) {
     console.error('Get group members error:', error);
