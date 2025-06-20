@@ -15,6 +15,7 @@ app.use(helmet());
 const allowedOrigins = [
   process.env.CLIENT_URL, 
   process.env.CLIENT_URL_2,
+  process.env.CLIENT_URL_3
 ].filter(Boolean);
 
 app.use(cors({
